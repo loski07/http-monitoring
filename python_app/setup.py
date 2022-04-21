@@ -8,6 +8,10 @@ here = path.abspath(path.dirname(__file__))
 with open(path.join(here, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
+# Get python dependencies from the requirements file
+with open(path.join(here, 'requirements.txt'), encoding='utf-8') as f:
+    install_requires = f.read()
+
 setup(
     name='http_monitor',
     version='1.0',
@@ -28,7 +32,7 @@ setup(
 
     packages=find_packages(exclude=['docs', 'tests']),
 
-    install_requires=['argcomplete'],
+    install_requires=install_requires,
 
     entry_points={
         'console_scripts': [
