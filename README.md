@@ -55,6 +55,40 @@ before a recovery of the first
 - Package your source code along with instructions on how to run it into a zip/tar
 file of some sort
 
+## Run instructions
+### Prerequisites
+- Python 3
+- Docker desktop (optional)
+- Zip file with the application
+- cd-ing to the working directory
+```shell
+unzip http-monitoring.unzip
+cd http-monitoring
+```
+### Using Docker
+- Building the image:
+```shell
+docker build . -t http_monit:v1.0
+```
+- Running the container
+```shell
+docker run --name http_monit -v $(pwd):/data http_monit:v1.0 http_monit -f /data/http-access-log.csv
+```
+### Installing the wheel into a virtual environment
+```shell
+python3 -m venv my_virtualenv
+source my_virtualenv/bin/activate
+pip3 install -e python_app
+http_monit -f ./http-access-log.csv
+```
+
+### Executing the python program
+```shell
+python3 -m venv my_virtualenv
+source my_virtualenv/bin/activate
+pip install -r python_app/requirements.txt
+python ./python_app/http_monit/runner.py -f ./http-access-log.csv
+```
 ## Implementation details
 ### Assumptions
 - The first row of the file or stdin input is considered the header and will be ignored.

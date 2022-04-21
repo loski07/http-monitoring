@@ -18,7 +18,7 @@ setup(
     description='Program that monitors an http log and alerts on conditions',
     long_description=long_description,
 
-    url='https://github.com/loski07',
+    url='https://github.com/loski07/http-monitoring',
     author='Pablo Díaz <loski07@gmail.com>',
 
     classifiers=[
@@ -36,7 +36,7 @@ setup(
 
     entry_points={
         'console_scripts': [
-            'socket_server_example = server.server:main',
+            'http_monit = http_monit.runner:main',
         ],
     }
 )
