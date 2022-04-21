@@ -93,32 +93,44 @@ python ./python_app/http_monit/runner.py -f ./http-access-log.csv
 ### Assumptions
 - The first row of the file or stdin input is considered the header and will be ignored.
 - The system will keep an internal clock based on the timestamp of the lines of the file. It will be initialized to the
-first timestamp and updated every time a timestamp of a line is bigger than the clock.
-- Every time the internal clock is updated, the system will check if we have spent 10 seconds from the beginning of the
-execution. If that is the case we will print the statistics for those 10 seconds.
+first timestamp and updated every time a timestamp of a line is bigger than the clock. If the first lines of the file
+are similar to the following snippet, the clock will be initialized to `1549573860` and the metrics prior to that
+(`1549573859`) will be stored but not taken in consideration as they were produced before the beginning of times.
+```text
+"remotehost","rfc931","authuser","date","request","status","bytes"
+"10.0.0.2","-","apache",1549573860,"GET /api/user HTTP/1.0",200,1234
+"10.0.0.4","-","apache",1549573860,"GET /api/user HTTP/1.0",200,1234
+"10.0.0.5","-","apache",1549573860,"GET /api/help HTTP/1.0",200,1234
+"10.0.0.4","-","apache",1549573859,"GET /api/help HTTP/1.0",200,1234
+```
+- Every time the internal clock is updated, all the subscribed manager will be notified of the tick. The event manager
+subscribed to the metrics manager will ask the metric manager for the load of the last 120 seconds and trigger an alert
+if that load is higher than the threshold. In addition to that, will keep track of when was the last time it asked the
+metrics manager to print statistics and if it was 10 seconds ago, it will ask the metrics manager to do it.
 (see method [process_log_line](./python_app/http_monit/runner.py))
 
-- We will show the following statistics per interval
+- We will show the following statistics per interval (closed interval on the left, open on the right)
 ```text
-Statistics for the interval 2019-02-07 22:18:38 - 2019-02-07 22:18:47
-=====================================================================
-total requests: 20
-total bytes transferred: 24551
-inbound bytes transferred: 6218
-outbound bytes transferred: 18333
+Statistics for the interval [2019-02-07 22:11:00 - 2019-02-07 22:11:10)
+=======================================================================
+total requests: 80
+total bytes transferred: 98518
+inbound bytes transferred: 26368
+outbound bytes transferred: 72150
 requests per method:
-	method: GET; requests: 14
-	method: POST; requests: 4
+	method: GET; requests: 58
+	method: POST; requests: 20
 requests per section:
-	section: /api; requests: 9
-	section: /report; requests: 9
+	section: /api; requests: 52
+	section: /report; requests: 26
 requests per remote:
-	remote: 10.0.0.1; requests: 8
-	remote: 10.0.0.3; requests: 0
-	remote: 10.0.0.5; requests: 6
-	remote: 10.0.0.2; requests: 2
+	remote: 10.0.0.2; requests: 18
+	remote: 10.0.0.4; requests: 10
+	remote: 10.0.0.1; requests: 19
+	remote: 10.0.0.3; requests: 10
+	remote: 10.0.0.5; requests: 18
 requests per status:
+	status: 200; requests: 65
+	status: 404; requests: 9
 	status: 500; requests: 3
-	status: 200; requests: 14
-	status: 404; requests: 0
 ```

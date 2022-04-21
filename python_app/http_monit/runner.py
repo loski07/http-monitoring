@@ -12,31 +12,81 @@ REQUEST = 4
 STATUS = 5
 BYTES = 6
 
-global_time = 0
+OK = '\033[92m'         #GREEN
+FAIL = '\033[91m'       #RED
+RESET = '\033[0m'       #RESET COLOR
 
 
-class AlertManager:
-    def __init__(self, load_threshold: int = 10, alert_window: int = 120) -> None:
-        self._load_threshold = load_threshold
-        self._alert_window = alert_window
+class Subscriber:
+    def tick(self, producer: typing.Any):
+        pass
+
+
+class EventManager(Subscriber):
+    def __init__(self, seconds_between_metrics_printouts: int = 10, load_alert_window: int = 120,
+                 load_alert_threshold: int = 10):
+        self.seconds_between_metrics_printouts = seconds_between_metrics_printouts
+        self.pending_ticks_for_next_stats = seconds_between_metrics_printouts
+        self.load_alert_threshold = load_alert_threshold
+        self.load_alert_window = load_alert_window
         self._alert_triggered = False
+
+    def alert(self, value: int, time: int) -> None:
+        if self._alert_triggered:
+            return
+        str_time = datetime.datetime.fromtimestamp(time)
+        print(f"\n{FAIL}High traffic generated an alert - hits = {value}, triggered at {str_time}{RESET}\n")
+        self._alert_triggered = True
+
+    def end_alert(self, time: int) -> None:
+        if not self._alert_triggered:
+            return
+        print(f"\n{OK}Traffic restored. Alert terminated at {datetime.datetime.fromtimestamp(time)}{RESET}\n")
+        self._alert_triggered = False
+
+    def tick(self, mm: typing.Any) -> None:
+        load = mm.get_load(self.load_alert_window)
+        if load > self.load_alert_threshold:
+            self.alert(load, mm.time)
+        else:
+            self.end_alert(mm.time)
+
+        self.pending_ticks_for_next_stats -= 1
+        if self.pending_ticks_for_next_stats == 0:
+            self.pending_ticks_for_next_stats = self.seconds_between_metrics_printouts
+            mm.print_metrics(self.seconds_between_metrics_printouts)
 
 
 class MetricManager:
     def __init__(self) -> None:
         self._tsdb = dict()
-        self._time = 0
-        self._last_logging_milestone = 0
+        self.time = 0
+        self._subscribed_managers = []
 
-        self._subscribed_alert_managers = []
+    def attach_manager(self, manager: Subscriber) -> None:
+        self._subscribed_managers.append(manager)
 
-    def attach_alert_manager(self, alert_manager: AlertManager) -> None:
-        self._subscribed_alert_managers.append(alert_manager)
-
-    def _print_metrics(self, until_time: int) -> None:
+    def get_load(self, time_window: int) -> int:
         """
-        Prints the metrics from the internal time series database between the two times.
-        :param until_time: time until where it should be collecting metrics.
+        Computes the amount of traffic for the last interval.
+        :param time_window: Number of seconds that define the interval.
+        :return: Total traffic during the interval
+        """
+        total_hits = 0
+        times = sorted(self._tsdb.keys(), reverse=True)
+        for t in times:
+            if t > self.time:
+                continue
+            hits = self._tsdb[t]
+            total_hits += len(hits)
+            if t <= self.time - time_window:
+                break
+        return total_hits
+
+    def print_metrics(self, time_window: int) -> None:
+        """
+        Prints the metrics from the internal time series database for the last interval.
+        :param time_window: Number of seconds that define the interval.
         """
         total_hits = 0
         total_traffic = 0
@@ -46,7 +96,7 @@ class MetricManager:
 
         times = sorted(self._tsdb.keys(), reverse=True)
         for t in times:
-            if t > until_time:
+            if t > self.time:
                 continue
 
             hits = self._tsdb[t]
@@ -64,12 +114,12 @@ class MetricManager:
                     else:
                         requests_dictionary[hit[name]] = 0
 
-            if t == self._last_logging_milestone:
+            if t <= self.time - time_window:
                 break
 
-        from_time_str = datetime.datetime.fromtimestamp(self._last_logging_milestone)
-        print(f"Statistics for the interval {from_time_str} - {datetime.datetime.fromtimestamp(until_time)}")
-        print("=====================================================================")
+        from_time_str = datetime.datetime.fromtimestamp(self.time - time_window)
+        print(f"Statistics for the interval [{from_time_str} - {datetime.datetime.fromtimestamp(self.time)})")
+        print("=======================================================================")
         print(f"total requests: {total_hits}")
         print(f"total bytes transferred: {total_traffic}")
         print(f"inbound bytes transferred: {inbound_traffic}")
@@ -89,6 +139,25 @@ class MetricManager:
                 for k, v in request_dictionary.items():
                     print(f"\t{name}: {k}; requests: {v}")
 
+    def _tick(self, time_in_file: int) -> bool:
+        """
+        Evaluates if the time passed as parameter means a new second in the internal clock. If the time is higher than
+        the internal clock, it will advance it a second and notify that a clock tick has been consumed.
+        :param time_in_file: Epoch from the log line currently parsed
+        :return: True if the parameter the epoch is bigger than the internal clock.
+        """
+        if self.time == 0:
+            self.time = time_in_file
+            return False
+
+        if self.time < time_in_file:
+            self.time += 1
+            for em in self._subscribed_managers:
+                em.tick(self)
+            return True
+        else:
+            return False
+
     def process_log_line(self, line: list[str]) -> None:
         """
         Parses the log line and stores it in its internal time series database.
@@ -96,24 +165,12 @@ class MetricManager:
         :param line: Log line to process.
         """
         int_time = int(line[EPOCH])
+        new_tick = self._tick(int_time)
+        while new_tick:
+            new_tick = self._tick(int_time)
+
         if int_time not in self._tsdb:
-
-            # Time only goes forward, so we will only update the clock when we find a new higher value
-            if int_time > self._time:
-                self._time = int_time
-
-            if len(self._tsdb) > 1:
-                times = sorted(self._tsdb.keys(), reverse=True)
-                if self._last_logging_milestone == 0:
-                    self._last_logging_milestone = times[-1]
-                delta = self._time - self._last_logging_milestone
-                while delta > 9:
-                    self._print_metrics(self._last_logging_milestone + 9)
-                    self._last_logging_milestone += 9
-                    delta = delta - self._last_logging_milestone
-
             self._tsdb[int_time] = []
-
         method = line[REQUEST].split()[0]
         section = '/' + line[REQUEST].split()[1].split('/')[1]
         remote = line[REMOTE]
@@ -145,8 +202,8 @@ def main(log_file_path: click.File, request_threshold: int):
     Monitors an http log file and shows statistics and alerts on high load conditions.
     """
     mm = MetricManager()
-    am = AlertManager(load_threshold=request_threshold)
-    mm.attach_alert_manager(am)
+    mm.attach_manager(EventManager())
+
     if isinstance(log_file_path, click.File):
         with open(log_file_path.name, 'r') as csvfile:
             _process_log_file(csvfile, mm)
