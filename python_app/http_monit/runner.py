@@ -12,59 +12,109 @@ REQUEST = 4
 STATUS = 5
 BYTES = 6
 
-OK = '\033[92m'         #GREEN
-FAIL = '\033[91m'       #RED
-RESET = '\033[0m'       #RESET COLOR
+GREEN = '\033[92m'  # GREEN
+RED = '\033[91m'  # RED
+RESET = '\033[0m'  # RESET COLOR
 
 
-class Subscriber:
-    def tick(self, producer: typing.Any):
+class AlertManager:
+    def alert(self, value: int, time: int) -> None:
+        pass
+
+    def end_alert(self, time: int) -> None:
+        pass
+
+    def info(self, data: dict) -> None:
         pass
 
 
-class EventManager(Subscriber):
-    def __init__(self, seconds_between_metrics_printouts: int = 10, load_alert_window: int = 120,
-                 load_alert_threshold: int = 10):
-        self.seconds_between_metrics_printouts = seconds_between_metrics_printouts
-        self.pending_ticks_for_next_stats = seconds_between_metrics_printouts
-        self.load_alert_threshold = load_alert_threshold
-        self.load_alert_window = load_alert_window
+class ConsoleAlertManager(AlertManager):
+    def __init__(self):
         self._alert_triggered = False
 
     def alert(self, value: int, time: int) -> None:
         if self._alert_triggered:
             return
         str_time = datetime.datetime.fromtimestamp(time)
-        print(f"\n{FAIL}High traffic generated an alert - hits = {value}, triggered at {str_time}{RESET}\n")
+        print(f"\n{RED}High traffic generated an alert - hits = {value}, triggered at {str_time}{RESET}\n")
         self._alert_triggered = True
 
     def end_alert(self, time: int) -> None:
         if not self._alert_triggered:
             return
-        print(f"\n{OK}Traffic restored. Alert terminated at {datetime.datetime.fromtimestamp(time)}{RESET}\n")
+        print(f"\n{GREEN}Traffic restored. Alert terminated at {datetime.datetime.fromtimestamp(time)}{RESET}\n")
         self._alert_triggered = False
 
-    def tick(self, mm: typing.Any) -> None:
-        load = mm.get_load(self.load_alert_window)
-        if load > self.load_alert_threshold:
-            self.alert(load, mm.time)
-        else:
-            self.end_alert(mm.time)
+    def info(self, data: dict) -> None:
+        for k, v in data.items():
+            print(k)
+            print("=======================================================================")
+            if isinstance(v, dict):
+                for k1, v1 in v.items():
+                    if isinstance(v1, dict):
+                        for k2, v2 in v1.items():
+                            print(f"{k1} {k2}:")
+                            for k3, v3 in v2.items():
+                                print(f"\t{k2}: {k3}; requests: {v3}")
+                    else:
+                        print(f"{k1}: {v1}")
+        print("")
 
-        self.pending_ticks_for_next_stats -= 1
-        if self.pending_ticks_for_next_stats == 0:
-            self.pending_ticks_for_next_stats = self.seconds_between_metrics_printouts
-            mm.print_metrics(self.seconds_between_metrics_printouts)
+
+class Subscriber:
+    def tick(self, producer: typing.Any) -> None:
+        """
+        Informs the subscriber of a new clock cycle.
+        :param producer: object it is subscribed to.
+        """
+        pass
+
+
+class EventManager(Subscriber):
+    def __init__(self, seconds_between_metrics_printouts: int = 10, load_alert_window: int = 120,
+                 load_alert_threshold: int = 10, alert_manager: AlertManager = ConsoleAlertManager()):
+        """
+        Constructor of the object that initializes its internal attributes with the parameters.
+        :param seconds_between_metrics_printouts: Time window between showing information.
+        :param load_alert_window: Time window for alert computing.
+        :param load_alert_threshold: Maximum load value tolerated.
+        :param alert_manager: Object that takes care of alerting and printing information.
+        """
+        self._seconds_between_metrics_printouts = seconds_between_metrics_printouts
+        self._pending_ticks_for_next_stats = seconds_between_metrics_printouts
+        self._load_alert_threshold = load_alert_threshold
+        self._load_alert_window = load_alert_window
+        self._alert_manager = alert_manager
+
+    def tick(self, mm: typing.Any) -> None:
+        """
+        Informs the event manager of a new clock cycle so it can check the load and the statistics and ask to show them
+        if the conditions require it.
+        :param mm: Metrics manager from where to collect data.
+        """
+        load = mm.get_load(self._load_alert_window)
+        if load > self._load_alert_threshold:
+            self._alert_manager.alert(load, mm.time)
+        else:
+            self._alert_manager.end_alert(mm.time)
+
+        self._pending_ticks_for_next_stats -= 1
+        if self._pending_ticks_for_next_stats == 0:
+            self._pending_ticks_for_next_stats = self._seconds_between_metrics_printouts
+            metrics = mm.get_metrics(self._seconds_between_metrics_printouts)
+            self._alert_manager.info(metrics)
 
 
 class MetricManager:
-    def __init__(self) -> None:
+    def __init__(self, event_manager: EventManager) -> None:
+        """
+        Constructor of the object that initializes its internal attributes with the parameters.
+        :param event_manager: Object that will take care of the events produced.
+        """
         self._tsdb = dict()
         self.time = 0
         self._subscribed_managers = []
-
-    def attach_manager(self, manager: Subscriber) -> None:
-        self._subscribed_managers.append(manager)
+        self._event_manager = event_manager
 
     def get_load(self, time_window: int) -> int:
         """
@@ -83,9 +133,9 @@ class MetricManager:
                 break
         return total_hits
 
-    def print_metrics(self, time_window: int) -> None:
+    def get_metrics(self, time_window: int) -> dict:
         """
-        Prints the metrics from the internal time series database for the last interval.
+        Collects the metrics from the internal time series database for the last interval.
         :param time_window: Number of seconds that define the interval.
         """
         total_hits = 0
@@ -118,26 +168,15 @@ class MetricManager:
                 break
 
         from_time_str = datetime.datetime.fromtimestamp(self.time - time_window)
-        print(f"Statistics for the interval [{from_time_str} - {datetime.datetime.fromtimestamp(self.time)})")
-        print("=======================================================================")
-        print(f"total requests: {total_hits}")
-        print(f"total bytes transferred: {total_traffic}")
-        print(f"inbound bytes transferred: {inbound_traffic}")
-        print(f"outbound bytes transferred: {outbound_traffic}")
-        self._print_request_dictionaries(requests_dictionaries)
-        print("")
-
-    @staticmethod
-    def _print_request_dictionaries(request_dictionaries: dict[str, dict[str, int]]):
-        """
-        Prints the requests per type and subtype.
-        :param request_dictionaries: type and subtype of the requests.
-        """
-        for name, request_dictionary in request_dictionaries.items():
-            if request_dictionary:
-                print(f"requests per {name}:")
-                for k, v in request_dictionary.items():
-                    print(f"\t{name}: {k}; requests: {v}")
+        title = f"Statistics for the interval [{from_time_str} - {datetime.datetime.fromtimestamp(self.time)})"
+        metrics = {title: {
+                        "total requests": total_hits,
+                        "total bytes transferred": total_traffic,
+                        "inbound bytes transferred": inbound_traffic,
+                        "outbound bytes transferred": outbound_traffic,
+                        "requests per": requests_dictionaries}
+                   }
+        return metrics
 
     def _tick(self, time_in_file: int) -> bool:
         """
@@ -152,8 +191,7 @@ class MetricManager:
 
         if self.time < time_in_file:
             self.time += 1
-            for em in self._subscribed_managers:
-                em.tick(self)
+            self._event_manager.tick(self)
             return True
         else:
             return False
@@ -181,7 +219,7 @@ class MetricManager:
         )
 
 
-def _process_log_file(csvfile: typing.Any,  mm: MetricManager) -> None:
+def _process_log_file(csvfile: typing.Any, mm: MetricManager) -> None:
     """
     Processes the log file line by line.
     :param csvfile: Iterable object that contains the log data.
@@ -201,8 +239,7 @@ def main(log_file_path: click.File, request_threshold: int):
     """
     Monitors an http log file and shows statistics and alerts on high load conditions.
     """
-    mm = MetricManager()
-    mm.attach_manager(EventManager())
+    mm = MetricManager(EventManager(load_alert_threshold=request_threshold))
 
     if isinstance(log_file_path, click.File):
         with open(log_file_path.name, 'r') as csvfile:
