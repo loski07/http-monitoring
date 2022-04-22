@@ -134,3 +134,42 @@ requests per status:
 	status: 404; requests: 9
 	status: 500; requests: 3
 ```
+
+### How to test the alarm logic
+In order to test the alarm logic, I created a pyunit test. I created a test `AlertManager` that will trigger custom
+exceptions when the alarm is triggered and when it is cancelled, so they can easily be caught and analyzed. 
+I also created a test file with the following request per second pattern.
+```text
+        r |
+        e |
+        q |                     *   *   *   *   *
+          |                     *   *   *   *   *
+          |                     *   *   *   *   *
+          |                     *   *   *   *   *
+          |                     *   *   *   *   *
+          |                     *   *   *   *   *
+          |                     *   *   *   *   *
+          | *   *   *   *   *   *   *   *   *   *   *   *   *
+          |___ ___ ___ ___ ___ ___ ___ ___ ___ ___ ___ ___ ___ ___ ___ ___ ___   time
+            0   1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16
+```
+The system is configured to alert if the load during the last 2 seconds is higher than 5, so, when we get the
+6th tick comes we will have the load of the second 4 (1 request) and the second 5 (8 requests), so 9 in total.
+That means that the system must raise an alarm.
+
+The load stabilizes in 8 hits per second until second 10. That condition is an alert condition but no alert
+should be triggered as the alert has been triggered before.
+
+When tick 12 comes, the load for the last 2 seconds was 1 request (second 10) and 1 request (second 11) so the 
+alarm should be cancelled informing that in second 11 the condition was resolved.
+
+#### How to run the alarm test
+Once you have coverer the [prerequisites](#Prerequisites) you can simply run:
+```shell
+PYTHONPATH=PYTHONPATH:./python_app python python_app/http_monit_tests/test_alert.py
+```
+
+## How to improve the application
+- Use a real time series database for storing the metrics.
+- Use have a distributed ingestion of the metrics for horizontal scale (given that the database was already extracted from the
+implementation)
